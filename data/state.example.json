@@ -1,14 +1,18 @@
 {
-  "chat_id": null,
-  "start_date": "2026-10-04",
-  "members": [
-    {"name": "Quvonchbek", "username": "quvonchbek8833"},
-    {"name": "Diyorbek", "username": "Atunelie"},
-    {"name": "Ibodullo", "username": null},
-    {"name": "Muhammad Yahyo", "username": "M2008_31"},
-    {"name": "Sardor", "username": "Sardor833"},
-    {"name": "O'ralbek", "username": null},
-    {"name": "Sarkorbek", "username": "O3071"},
-    {"name": "Abduqodir", "username": "abduqodir_fotih"}
+  "crews": [
+    {
+      "id": "misol-guruh",
+      "name": "Misol guruh",
+      "chat_id": null,
+      "start_date": "2026-10-04",
+      "shift_size": 1,
+      "members": [
+        {"name": "Ism Familiya", "username": "username_yoki_null"}
+      ],
+      "tasks": [
+        "Birinchi ish",
+        "Ikkinchi ish"
+      ]
+    }
   ]
 }

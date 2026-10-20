@@ -9,12 +9,11 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from zoneinfo import ZoneInfo
 
 import duty
-from storage import load_state, set_chat_id
+from storage import crew_by_chat_id, crew_by_id, crews, set_crew_chat_id
 
 load_dotenv()
 
 TOKEN = os.environ["BOT_TOKEN"]
-FALLBACK_CHAT_ID = os.environ.get("GROUP_CHAT_ID") or None
 TZ = ZoneInfo("Asia/Tashkent")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -39,38 +38,45 @@ MENU_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+NOT_REGISTERED_TEXT = (
+    "⚠️ Bu guruh hali ro'yxatga olinmagan.\n"
+    "Admin uchun: /belgila <guruh_id> buyrug'ini ishlating."
+)
 
-def _target_chat_id() -> int | None:
-    state = load_state()
-    return state.get("chat_id") or (int(FALLBACK_CHAT_ID) if FALLBACK_CHAT_ID else None)
+
+def _crew_for_chat(chat_id: int) -> dict | None:
+    return crew_by_chat_id(chat_id)
 
 
-def _bugun_text() -> str:
+def _bugun_text(crew: dict) -> str:
     return (
-        f"📅 Bugun navbatchi: <b>{duty.display(duty.today())}</b>\n\n"
-        f"🧹 Bajarilishi kerak bo'lgan ishlar:\n{duty.tasks_text()}"
+        f"📅 Bugun navbatchi: <b>{duty.display_people(duty.today(crew))}</b>\n\n"
+        f"🧹 Bajarilishi kerak bo'lgan ishlar:\n{duty.tasks_text(crew)}"
     )
 
 
-def _ertaga_text() -> str:
-    return f"📅 Ertaga navbatchi: <b>{duty.tomorrow()['name']}</b>"
+def _ertaga_text(crew: dict) -> str:
+    return f"📅 Ertaga navbatchi: <b>{duty.plain_names(duty.tomorrow(crew))}</b>"
 
 
-def _kecha_text() -> str:
-    return f"📅 Kecha navbatchi edi: <b>{duty.yesterday()['name']}</b>"
+def _kecha_text(crew: dict) -> str:
+    return f"📅 Kecha navbatchi edi: <b>{duty.plain_names(duty.yesterday(crew))}</b>"
 
 
-def _royxat_text() -> str:
-    today_name = duty.today()["name"]
+def _royxat_text(crew: dict) -> str:
+    today_idx = duty.shift_index_for(crew, duty.today_date())
     lines = []
-    for i, person in enumerate(duty.roster(), start=1):
-        mark = " ⬅️ bugun" if person["name"] == today_name else ""
-        lines.append(f"{i}. {person['name']}{mark}")
+    for i, people in enumerate(duty.shifts_roster(crew)):
+        mark = " ⬅️ bugun" if i == today_idx else ""
+        lines.append(f"{i + 1}. {duty.plain_names(people)}{mark}")
     return "👥 <b>Navbatchilar ro'yxati:</b>\n\n" + "\n".join(lines)
 
 
-def _haftalik_text() -> str:
-    lines = [f"{d.strftime('%d.%m')} ({duty.weekday_uz(d)}) — {person['name']}" for d, person in duty.upcoming(7)]
+def _haftalik_text(crew: dict) -> str:
+    lines = [
+        f"{d.strftime('%d.%m')} ({duty.weekday_uz(d)}) — {duty.plain_names(people)}"
+        for d, people in duty.upcoming(crew, 7)
+    ]
     return "🗓 <b>Keyingi 7 kun:</b>\n\n" + "\n".join(lines)
 
 
@@ -93,31 +99,33 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    action = MENU_ACTIONS.get(query.data)
     await query.answer()
+    action = MENU_ACTIONS.get(query.data)
     if not action:
         return
-    await query.message.reply_html(action(), reply_markup=MENU_KEYBOARD)
+    crew = _crew_for_chat(query.message.chat.id)
+    if not crew:
+        await query.message.reply_html(NOT_REGISTERED_TEXT)
+        return
+    await query.message.reply_html(action(crew), reply_markup=MENU_KEYBOARD)
 
 
-async def cmd_bugun(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_html(_bugun_text(), reply_markup=MENU_KEYBOARD)
+def _command(action) -> callable:
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        crew = _crew_for_chat(update.effective_chat.id)
+        if not crew:
+            await update.message.reply_html(NOT_REGISTERED_TEXT)
+            return
+        await update.message.reply_html(action(crew), reply_markup=MENU_KEYBOARD)
+
+    return handler
 
 
-async def cmd_ertaga(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_html(_ertaga_text(), reply_markup=MENU_KEYBOARD)
-
-
-async def cmd_kecha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_html(_kecha_text(), reply_markup=MENU_KEYBOARD)
-
-
-async def cmd_royxat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_html(_royxat_text(), reply_markup=MENU_KEYBOARD)
-
-
-async def cmd_haftalik(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_html(_haftalik_text(), reply_markup=MENU_KEYBOARD)
+cmd_bugun = _command(_bugun_text)
+cmd_ertaga = _command(_ertaga_text)
+cmd_kecha = _command(_kecha_text)
+cmd_royxat = _command(_royxat_text)
+cmd_haftalik = _command(_haftalik_text)
 
 
 async def cmd_belgila(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -129,49 +137,73 @@ async def cmd_belgila(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
         await update.message.reply_text("Bu buyruqni faqat guruh adminlari ishlata oladi.")
         return
-    set_chat_id(chat.id)
+
+    if context.args:
+        crew = crew_by_id(context.args[0])
+        if not crew:
+            ids = ", ".join(c["id"] for c in crews())
+            await update.message.reply_text(f"Bunday guruh topilmadi. Mavjud id'lar: {ids}")
+            return
+    else:
+        unset = [c for c in crews() if not c.get("chat_id")]
+        if len(unset) != 1:
+            ids = ", ".join(c["id"] for c in crews())
+            await update.message.reply_text(
+                f"Qaysi ro'yxatni belgilashni aniq ko'rsating: /belgila <id>\nMavjud id'lar: {ids}"
+            )
+            return
+        crew = unset[0]
+
+    set_crew_chat_id(crew["id"], chat.id)
     await update.message.reply_text(
-        f"✅ Shu guruh ({chat.title}) eslatmalar uchun belgilandi.\nHar kuni soat 07:00 va 19:00 da xabar yuboriladi."
+        f"✅ Shu guruh ({chat.title}) \"{crew['id']}\" ro'yxati uchun belgilandi.\n"
+        "Har kuni soat 07:00 va 19:00 da xabar yuboriladi."
     )
 
 
-def _morning_message() -> str:
-    name = duty.display(duty.today())
+def _morning_message(crew: dict) -> str:
+    name = duty.display_people(duty.today(crew))
     return (
         f"📢 <b>{name}</b>, bugun sizning navbatchilik kuningiz!\n\n"
-        f"🧹 Bajarilishi kerak bo'lgan ishlar:\n{duty.tasks_text()}\n\n"
+        f"🧹 Bajarilishi kerak bo'lgan ishlar:\n{duty.tasks_text(crew)}\n\n"
         "✅ Ishlarni bajarib bo'lgach, qilgan ishlaringiz rasmini shu yerga tashlang.\n\n"
         "Omad! 💪\n\n"
         "Ertangi navbatchini bilish uchun: /ertaga"
     )
 
 
-def _evening_message() -> str:
-    name = duty.display(duty.today())
-    next_name = duty.tomorrow()["name"]
+def _evening_message(crew: dict) -> str:
+    name = duty.display_people(duty.today(crew))
+    next_name = duty.plain_names(duty.tomorrow(crew))
     return (
         f"🌙 <b>{name}</b>, bugungi navbatchilik kuningiz yakunlanmoqda.\n\n"
-        f"🧹 Bajarilishi kerak bo'lgan ishlar:\n{duty.tasks_text()}\n\n"
+        f"🧹 Bajarilishi kerak bo'lgan ishlar:\n{duty.tasks_text(crew)}\n\n"
         "Barcha ishlarni bajardingizmi? Agar hali ulgurmagan bo'lsangiz, hoziroq yakunlang va "
         "qilgan ishlaringiz rasmini shu yerga tashlang. 📸\n\n"
         f"Ertaga navbatchi: <b>{next_name}</b> — batafsil: /ertaga"
     )
 
 
+async def _send_to_all_crews(context: ContextTypes.DEFAULT_TYPE, build_message) -> None:
+    for crew in crews():
+        chat_id = crew.get("chat_id")
+        if not chat_id:
+            logger.warning("Crew %s has no chat_id; skipping", crew["id"])
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, text=build_message(crew), parse_mode=ParseMode.HTML, reply_markup=MENU_KEYBOARD
+            )
+        except Exception:
+            logger.exception("Failed to send reminder to crew %s (chat_id=%s)", crew["id"], chat_id)
+
+
 async def send_morning(context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = _target_chat_id()
-    if not chat_id:
-        logger.warning("No target chat set; skipping morning reminder")
-        return
-    await context.bot.send_message(chat_id=chat_id, text=_morning_message(), parse_mode=ParseMode.HTML, reply_markup=MENU_KEYBOARD)
+    await _send_to_all_crews(context, _morning_message)
 
 
 async def send_evening(context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = _target_chat_id()
-    if not chat_id:
-        logger.warning("No target chat set; skipping evening reminder")
-        return
-    await context.bot.send_message(chat_id=chat_id, text=_evening_message(), parse_mode=ParseMode.HTML, reply_markup=MENU_KEYBOARD)
+    await _send_to_all_crews(context, _evening_message)
 
 
 async def _post_init(app: Application) -> None:
